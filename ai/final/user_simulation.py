@@ -4,15 +4,20 @@ Basé sur les données réelles extraites par process_data.py
 """
 import numpy as np
 import pandas as pd
+import os
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Tuple
+
+# Obtenir le répertoire du script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # Charger les statistiques des données réelles
 def load_real_statistics():
     """Charge les statistiques des données réelles pour calibrage."""
     try:
-        df_real = pd.read_csv('features_dataset.csv')
+        features_path = os.path.join(SCRIPT_DIR, 'features_dataset.csv')
+        df_real = pd.read_csv(features_path)
         # Statistiques réelles observées
         stats = {
             'HR_mean': df_real['ecg_hr_bpm'].mean(),
@@ -107,6 +112,82 @@ def generate_user_profile(age=None, sex=None, fitness_level='intermédiaire') ->
     )
 
 
+def generate_fatigue_labels(df: pd.DataFrame,
+                           hr_percentile: float = 75.0,
+                           hrv_percentile: float = 25.0,
+                           emg_percentile: float = 75.0,
+                           resp_percentile: float = 75.0) -> pd.DataFrame:
+    """
+    Génère les labels de fatigue basés sur des percentiles des features physiologiques.
+    
+    Logique:
+    - HR élevé (> 75e percentile) = fatigue
+    - HRV basse (< 25e percentile) = fatigue
+    - EMG élevé (> 75e percentile) = fatigue
+    - Respiration élevée (> 75e percentile) = fatigue
+    
+    Un sample est "fatigué" si au moins 2 de ces conditions sont vraies.
+    
+    Args:
+        df: DataFrame contenant les features physiologiques
+        hr_percentile: Percentile pour HR élevé
+        hrv_percentile: Percentile pour HRV basse
+        emg_percentile: Percentile pour EMG élevé
+        resp_percentile: Percentile pour respiration élevée
+        
+    Returns:
+        DataFrame avec la colonne 'fatigue' ajoutée
+    """
+    required_cols = ['ecg_hr_bpm', 'ecg_hrv_sdnn', 'ecg_hrv_rmssd', 
+                     'emg_rms', 'emg_median_freq', 'resp_rate_bpm']
+    
+    # Vérifier que les colonnes existent
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Features manquantes. Colonnes requises: {required_cols}")
+    
+    # Créer des copies pour éviter les warnings SettingWithCopyWarning
+    df = df.copy()
+    
+    # 1. HR élevé (75e percentile)
+    hr_threshold = df['ecg_hr_bpm'].quantile(hr_percentile / 100.0)
+    high_hr = df['ecg_hr_bpm'] > hr_threshold
+    
+    # 2. HRV basse (25e percentile)
+    hrv_sdnn_threshold = df['ecg_hrv_sdnn'].quantile(hrv_percentile / 100.0)
+    low_hrv_sdnn = df['ecg_hrv_sdnn'] < hrv_sdnn_threshold
+    
+    hrv_rmssd_threshold = df['ecg_hrv_rmssd'].quantile(hrv_percentile / 100.0)
+    low_hrv_rmssd = df['ecg_hrv_rmssd'] < hrv_rmssd_threshold
+    
+    low_hrv = low_hrv_sdnn | low_hrv_rmssd
+    
+    # 3. EMG élevé (75e percentile)
+    emg_rms_threshold = df['emg_rms'].quantile(emg_percentile / 100.0)
+    high_emg_rms = df['emg_rms'] > emg_rms_threshold
+    
+    emg_freq_threshold = df['emg_median_freq'].quantile(emg_percentile / 100.0)
+    high_emg_freq = df['emg_median_freq'] > emg_freq_threshold
+    
+    high_emg = high_emg_rms | high_emg_freq
+    
+    # 4. Respiration élevée (75e percentile)
+    resp_threshold = df['resp_rate_bpm'].quantile(resp_percentile / 100.0)
+    high_resp = df['resp_rate_bpm'] > resp_threshold
+    
+    # Compter les indicateurs de fatigue par sample
+    fatigue_indicators = (
+        high_hr.fillna(False).astype(int) +
+        low_hrv.fillna(False).astype(int) +
+        high_emg.fillna(False).astype(int) +
+        high_resp.fillna(False).astype(int)
+    )
+    
+    # Un sample est fatigué si au moins 2 indicateurs sont positifs
+    df['fatigue'] = (fatigue_indicators >= 2).astype(int)
+    
+    return df
+
+
 if __name__ == "__main__":
     print("\n=== Génération de profils utilisateurs ===")
     
@@ -125,7 +206,41 @@ if __name__ == "__main__":
         })
     
     df_profiles = pd.DataFrame(profiles)
-    df_profiles.to_csv('user_profiles.csv', index=False)
+    profiles_path = os.path.join(SCRIPT_DIR, 'user_profiles.csv')
+    df_profiles.to_csv(profiles_path, index=False)
     print(f"\n {len(profiles)} profils sauvegardés : user_profiles.csv")
+    
+    # Charger les données simulées
+    try:
+        features_path = os.path.join(SCRIPT_DIR, 'features_dataset.csv')
+        df_features = pd.read_csv(features_path)
+        print(f"\n {len(df_features)} samples chargés : features_dataset.csv")
+        
+        # Générer les labels de fatigue
+        df_features = generate_fatigue_labels(df_features)
+        
+        # Sauvegarder avec les labels
+        df_features.to_csv(features_path, index=False)
+        print(f"Labels de fatigue ajoutés et fichier sauvegardé!")
+        
+        # Afficher statistiques
+        n_fatigued = (df_features['fatigue'] == 1).sum()
+        n_not_fatigued = (df_features['fatigue'] == 0).sum()
+        
+        print(f"\n=== DISTRIBUTION DES LABELS DE FATIGUE ===")
+        print(f"Non-fatigué (0): {n_not_fatigued} ({100*n_not_fatigued/len(df_features):.1f}%)")
+        print(f"Fatigué (1):     {n_fatigued} ({100*n_fatigued/len(df_features):.1f}%)")
+        
+        if 'activity' in df_features.columns:
+            print(f"\n=== DISTRIBUTION PAR ACTIVITÉ ===")
+            for activity in sorted(df_features['activity'].unique()):
+                mask = df_features['activity'] == activity
+                fatigued = (df_features.loc[mask, 'fatigue'] == 1).sum()
+                total = mask.sum()
+                print(f"{activity:15s}: {fatigued:3d}/{total:3d} ({100*fatigued/total:5.1f}%)")
+    
+    except FileNotFoundError:
+        print("Aucun fichier features_dataset.csv trouvé. Générez d'abord les données avec process_data.py")
+
 
 
