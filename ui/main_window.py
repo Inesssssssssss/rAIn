@@ -251,7 +251,6 @@ class MainWindow(QMainWindow):
             'sex': sex,
             'fitness': fitness,
             'duration': 10,  # 10 minutes
-            'activity_type': 'mixed',  # Marche et course mélangée
             'phases': [
                 {'type': 'walk', 'duration': 3},      # 3 min marche
                 {'type': 'run', 'duration': 5},       # 5 min course
@@ -288,9 +287,8 @@ class MainWindow(QMainWindow):
         
         # Préparer la séance
         self.current_recommendation = {
-            'activity_type': 'mixed',
             'intensity': 'low',
-            'duration_range': [10, 10],
+            'duration': 10,
             'hr_target_range': [100, 140],
             'description': 'Entraînement initial pour collecte de données',
             'recovery_status': {
@@ -497,8 +495,7 @@ class MainWindow(QMainWindow):
         text += f"État: {recovery['status'].upper()} ({recovery['score']}/100)\n"
         text += f"Fatigue: {recovery.get('fatigue_probability', 0):.1%} | Tendance: {recovery.get('fatigue_trend', 'N/A')}\n"
         text += f"{recovery['message']}\n\n"
-        text += f"Type: {rec['activity_type'].upper()} | Intensité: {rec['intensity']}\n"
-        text += f"Durée: {rec['duration_range'][0]}-{rec['duration_range'][1]} min\n"
+        text += f"Durée: {rec['duration']} min\n"
         text += f"Zone HR: {rec['hr_target_range'][0]}-{rec['hr_target_range'][1]} bpm\n\n"
         text += f"{rec['description']}\n\n"
         
@@ -520,11 +517,10 @@ class MainWindow(QMainWindow):
     
     def setup_timer(self):
         rec = self.current_recommendation
-        recommended_seconds = rec['duration_range'][1] * 60
+        recommended_seconds = rec['duration'] * 60
         self.target_duration = min(recommended_seconds, 30 * 60)
         
-        dur_min, dur_max = rec['duration_range']
-        self.duration_label.setText(f"Durée recommandée: {dur_min}-{min(dur_max, 30)} minutes (max 30)")
+        self.duration_label.setText(f"Durée recommandée: {min(rec['duration'], 30)} minutes")
         
         hr_min, hr_max = rec['hr_target_range']
         self.zones_label.setText(f"Zone HR cible: {hr_min}-{hr_max} bpm")
@@ -540,27 +536,18 @@ class MainWindow(QMainWindow):
                 {'type': 'walk', 'duration': 2 * 60, 'label': 'Marche (récupération)'}
             ]
             self.current_phase_index = 0
-            self.work_duration_sec = self.initial_phases[0]['duration']
+            self.phase_label.setText("Phase: Marche (échauffement)")
+            self.phase_remaining_label.setText(f"Temps restant phase: {3:02d}:00")
+            self.phase_label.show()
+            self.phase_remaining_label.show()
         else:
-            # Entraînement normal: modes effort/repos
-            intensity = rec.get('intensity', '').lower()
-            if intensity == 'high' or intensity == 'élevée':
-                self.work_duration_sec = 90
-                self.rest_duration_sec = 45
-            elif intensity == 'moderate' or intensity == 'modérée':
-                self.work_duration_sec = 120
-                self.rest_duration_sec = 60
-            else:
-                self.work_duration_sec = 180
-                self.rest_duration_sec = 90
-            
+            # Entraînement normal: pas de phases, juste la durée totale
             self.initial_phases = None
+            self.phase_label.hide()
+            self.phase_remaining_label.hide()
         
         self.elapsed_seconds = 0
         self.phase_elapsed = 0
-        self.phase_type = 'effort'
-        self.phase_label.setText("Phase: Effort")
-        self.phase_remaining_label.setText(f"Temps restant phase: {self.work_duration_sec // 60:02d}:{self.work_duration_sec % 60:02d}")
         
         self.start_pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -582,7 +569,6 @@ class MainWindow(QMainWindow):
         self.is_paused = False
         self.elapsed_seconds = 0
         self.phase_elapsed = 0
-        self.phase_type = 'effort'
         
         self.start_pause_btn.setText("Pause")
         self.stop_btn.setEnabled(True)
@@ -604,14 +590,15 @@ class MainWindow(QMainWindow):
         self.is_paused = False
         self.elapsed_seconds = 0
         self.phase_elapsed = 0
-        self.phase_type = 'effort'
         
         self.timer_label.setText("00:00")
         self.timer_label.setStyleSheet("color: #3498db;")
         self.progress_bar.setValue(0)
         self.progress_label.setText("0%")
-        self.phase_label.setText("Phase: --")
-        self.phase_remaining_label.setText("Temps restant phase: --")
+        
+        # Masquer les labels de phase
+        self.phase_label.hide()
+        self.phase_remaining_label.hide()
         
         self.start_pause_btn.setText("Démarrer")
         self.start_pause_btn.setEnabled(True)
@@ -796,7 +783,7 @@ class MainWindow(QMainWindow):
         percentage = int((self.elapsed_seconds / self.target_duration) * 100) if self.target_duration > 0 else 0
         self.progress_label.setText(f"{percentage}%")
 
-        # Gestion des phases fixes pour l'entraînement initial
+        # Gestion des phases UNIQUEMENT pour l'entraînement initial
         if self.initial_phases:
             # Trouver la phase actuelle
             time_in_session = self.elapsed_seconds
@@ -811,22 +798,8 @@ class MainWindow(QMainWindow):
                     self.phase_remaining_label.setText(f"Temps restant phase: {remaining // 60:02d}:{remaining % 60:02d}")
                     break
                 current_time += phase_duration
-        else:
-            # Mode effort/repos normal
-            if self.phase_type == 'effort':
-                remaining = max(self.work_duration_sec - self.phase_elapsed, 0)
-                self.phase_label.setText("Phase: Effort")
-                self.phase_remaining_label.setText(f"Temps restant phase: {remaining // 60:02d}:{remaining % 60:02d}")
-                if self.phase_elapsed >= self.work_duration_sec:
-                    self.phase_type = 'repos'
-                    self.phase_elapsed = 0
-            else:
-                remaining = max(self.rest_duration_sec - self.phase_elapsed, 0)
-                self.phase_label.setText("Phase: Repos")
-                self.phase_remaining_label.setText(f"Temps restant phase: {remaining // 60:02d}:{remaining % 60:02d}")
-                if self.phase_elapsed >= self.rest_duration_sec:
-                    self.phase_type = 'effort'
-                    self.phase_elapsed = 0
+        
+        # Pas de gestion de phases pour les entraînements normaux
         
         if self.elapsed_seconds >= self.target_duration:
             self.timer_label.setStyleSheet("color: #e74c3c;")
