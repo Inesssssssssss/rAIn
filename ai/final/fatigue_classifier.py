@@ -76,25 +76,25 @@ class FatigueClassifier:
         if missing_features:
             raise ValueError(f"Features manquantes dans les données: {missing_features}")
         
-        if 'fatigue' not in df.columns:
-            raise ValueError("La colonne 'fatigue' est requise dans les données")
+        # Vérifier que 'fatigue' ou 'label' existe
+        if 'fatigue' not in df.columns and 'label' not in df.columns:
+            raise ValueError("La colonne 'fatigue' ou 'label' est requise dans les données")
         
         # Extraire features et labels
         X = df[self.FEATURE_NAMES].values
-        y = df['fatigue'].values
+        # Accepter 'fatigue' ou 'label' (depuis dataset augmenté)
+        if 'fatigue' in df.columns:
+            y = df['fatigue'].values
+        elif 'label' in df.columns:
+            y = df['label'].values
+        else:
+            raise ValueError("La colonne 'fatigue' ou 'label' est requise dans les données")
         
-        # Gérer les valeurs manquantes
-        # Remplacer les NaN par la médiane de la colonne
-        X_clean = X.copy()
-        for i in range(X.shape[1]):
-            col_data = X[:, i]
-            mask = ~np.isnan(col_data)
-            if mask.sum() > 0:
-                median_val = np.nanmedian(col_data)
-                X_clean[np.isnan(col_data), i] = median_val
-            else:
-                X_clean[:, i] = 0  # Si tout est NaN, remplir avec 0
-        
+        # Convertir en numérique et imputer les valeurs manquantes par la médiane
+        numeric_df = df[self.FEATURE_NAMES].apply(pd.to_numeric, errors='coerce')
+        medians = numeric_df.median()
+        numeric_df = numeric_df.fillna(medians)
+        X_clean = numeric_df.values.astype(float)
         return X_clean, y
     
     def train(self, X: np.ndarray, y: np.ndarray, 
@@ -283,19 +283,83 @@ def train_fatigue_model_from_simulations(
     return clf
 
 
+def evaluate_clf_on_csv(clf: FatigueClassifier, dataset_path: str) -> Dict:
+    """
+    Évalue un classificateur existant sur un dataset CSV.
+    Affiche et retourne les métriques de performance.
+    
+    Args:
+        clf: Instance entraînée de FatigueClassifier
+        dataset_path: Chemin (relatif ou absolu) vers le CSV réel
+    
+    Returns:
+        Dict des métriques (accuracy, precision, recall, f1, confusion, report)
+    """
+    # Utiliser le chemin absolu si relatif
+    if not os.path.isabs(dataset_path):
+        dataset_path = os.path.join(SCRIPT_DIR, dataset_path)
+    
+    print(f"\nChargement du dataset pour évaluation: {dataset_path}...")
+    df_real = pd.read_csv(dataset_path)
+    X_real, y_real = clf.prepare_data(df_real)
+    
+    print(f"Données réelles: {X_real.shape[0]} samples")
+    y_pred_real = clf.predict(X_real)
+    
+    metrics_real = {
+        'accuracy': accuracy_score(y_real, y_pred_real),
+        'precision': precision_score(y_real, y_pred_real, zero_division=0),
+        'recall': recall_score(y_real, y_pred_real, zero_division=0),
+        'f1': f1_score(y_real, y_pred_real, zero_division=0),
+        'confusion_matrix': confusion_matrix(y_real, y_pred_real),
+        'classification_report': classification_report(y_real, y_pred_real, zero_division=0)
+    }
+    
+    print("\n=== ÉVALUATION SUR DONNÉES RÉELLES ===")
+    print(f"Accuracy:  {metrics_real['accuracy']:.3f}")
+    print(f"Precision: {metrics_real['precision']:.3f}")
+    print(f"Recall:    {metrics_real['recall']:.3f}")
+    print(f"F1-Score:  {metrics_real['f1']:.3f}")
+    print("\n=== MATRICE DE CONFUSION (RÉEL) ===")
+    print("[[TN, FP],")
+    print(" [FN, TP]]")
+    print(metrics_real['confusion_matrix'])
+    print("\n=== RAPPORT DE CLASSIFICATION (RÉEL) ===")
+    print(metrics_real['classification_report'])
+    
+    return metrics_real
+
+
 if __name__ == "__main__":
     # Exemple d'utilisation
     import sys
     
-    simulations_file = 'features_dataset.csv'
+    # Essayer d'abord le dataset augmenté (recommandé)
+    simulations_file = 'features_dataset_augmented.csv'
     
+    """
+    # Fallback sur dataset réel si le dataset augmenté n'existe pas
+    if not os.path.exists(os.path.join(SCRIPT_DIR, simulations_file)):
+        simulations_file = 'features_dataset.csv'
+        print(f"Dataset augmenté non trouvé. Utilisation de {simulations_file}")
+    """
     try:
         clf = train_fatigue_model_from_simulations(simulations_file)
-        print("\n✓ Modèle entraîné avec succès!")
+        print("\nModèle entraîné avec succès!")
+        # Évaluation automatique sur données réelles si disponibles
+        real_file = 'features_dataset.csv'
+        real_path = os.path.join(SCRIPT_DIR, real_file)
+        if os.path.exists(real_path):
+            print("\nÉvaluation du modèle (entraîné sur données simulées) sur données réelles...")
+            _ = evaluate_clf_on_csv(clf, real_file)
+        else:
+            print(f"\nDataset réel non trouvé à {real_path}. Skipping évaluation réelle.")
     except FileNotFoundError:
         features_path = os.path.join(SCRIPT_DIR, simulations_file)
         print(f"Erreur: Le fichier {features_path} n'a pas été trouvé.")
-        print("Assurez-vous que features_dataset.csv existe dans le répertoire du script.")
+        print("Générez d'abord les données avec:")
+        print("  1. process_data.py (données réelles)")
+        print("  2. user_simulation.py (données augmentées)")
         sys.exit(1)
     except Exception as e:
         print(f"Erreur lors de l'entraînement: {e}")
