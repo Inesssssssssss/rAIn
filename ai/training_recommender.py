@@ -10,9 +10,10 @@ from typing import Dict, List, Tuple
 
 # Obtenir le répertoire du script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
-from fatigue_classifier import FatigueClassifier
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from ai.fatigue_classifier import FatigueClassifier
 
 # Obtenir le répertoire du script (déjà défini)
 
@@ -22,8 +23,8 @@ class TrainingRecommender:
     Système de recommandation d'entraînement personnalisé.
     """
     
-    def __init__(self, model_path: str = 'fatigue_model.pkl', 
-                 scaler_path: str = 'fatigue_scaler.pkl'):
+    def __init__(self, model_path: str = None, 
+                 scaler_path: str = None):
         """
         Initialise le recommandeur.
         
@@ -31,27 +32,35 @@ class TrainingRecommender:
             model_path: Chemin vers le modèle de fatigue entraîné
             scaler_path: Chemin vers le scaler
         """
+        # Utiliser les chemins par défaut s'ils ne sont pas fournis
+        if model_path is None:
+            model_path = os.path.join(PROJECT_ROOT, 'models', 'fatigue_model.pkl')
+        if scaler_path is None:
+            scaler_path = os.path.join(PROJECT_ROOT, 'models', 'fatigue_scaler.pkl')
+        
         self.classifier = FatigueClassifier.load(model_path, scaler_path)
         self.user_history = None
         self.user_profile = None
         
     def load_user_data(self, user_id: int, 
-                       features_path: str = 'features_dataset.csv',
-                       profiles_path: str = 'user_profiles.csv') -> bool:
+                       features_path: str = None,
+                       profiles_path: str = None) -> bool:
         """
         Charge les données d'un utilisateur.
         
         Args:
             user_id: ID de l'utilisateur
-            features_path: Chemin vers les features
-            profiles_path: Chemin vers les profils utilisateurs
+            features_path: Chemin vers les features (défaut: output/features/features_dataset.csv)
+            profiles_path: Chemin vers les profils utilisateurs (défaut: output/user_profiles.csv)
             
         Returns:
             True si les données ont été chargées avec succès
         """
-        # Charger les features
-        if not os.path.isabs(features_path):
-            features_path = os.path.join(SCRIPT_DIR, features_path)
+        # Définir les chemins par défaut basés sur la structure du projet
+        if features_path is None:
+            features_path = os.path.join(PROJECT_ROOT, 'output', 'features', 'features_dataset.csv')
+        if profiles_path is None:
+            profiles_path = os.path.join(PROJECT_ROOT, 'output', 'user_profiles.csv')
         
         # Essayer d'abord le dataset augmenté
         features_augmented_path = features_path.replace('features_dataset.csv', 'features_dataset_augmented.csv')

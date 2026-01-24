@@ -207,7 +207,7 @@ class FatigueClassifier:
     @classmethod
     def load(cls, model_path: str, scaler_path: str):
         """Charge un modèle entraîné."""
-        # Utiliser des chemins absolus si relatifs
+        # Utiliser les chemins tels quels s'ils sont absolus
         if not os.path.isabs(model_path):
             model_path = os.path.join(SCRIPT_DIR, model_path)
         if not os.path.isabs(scaler_path):

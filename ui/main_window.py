@@ -17,8 +17,8 @@ import numpy as np
 # Ajouter le chemin du projet
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from ai.final.training_recommender import TrainingRecommender
-from ai.live_stream import LiveLSLReader
+from ai.training_recommender import TrainingRecommender
+from ui.live_stream import LiveLSLReader
 
 
 
@@ -47,8 +47,12 @@ class MainWindow(QMainWindow):
         
         # Chemin des fichiers de profil utilisateur
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.user_profiles_path = os.path.join(self.project_root, 'user_profiles.csv')
-        self.features_path = os.path.join(self.project_root, 'ai', 'final', 'features_dataset.csv')
+        self.output_dir = os.path.join(self.project_root, 'output')
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, 'features'), exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, 'sessions'), exist_ok=True)
+        self.user_profiles_path = os.path.join(self.output_dir, 'user_profiles.csv')
+        self.features_path = os.path.join(self.output_dir, 'features', 'features_dataset.csv')
         
         self.init_ui()
         
@@ -59,7 +63,7 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout()
         central_widget.setLayout(main_layout)
 
-        title_label = QLabel("rAIN - entrainement de course par IA")
+        title_label = QLabel("💧 rAIn - entraînement de course par IA")
         title_font = QFont("Arial", 18, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
@@ -81,6 +85,66 @@ class MainWindow(QMainWindow):
         self.live_timer = QTimer(self)
         self.live_timer.setInterval(200)
         self.live_timer.timeout.connect(self.update_live_values)
+
+        # Appliquer le thème blanc/bleu
+        self.apply_theme()
+
+    def apply_theme(self):
+        """Applique un thème global blanc/bleu à l'interface."""
+        theme_css = """
+        QWidget {
+            background-color: #ffffff;
+            color: #1f2937;
+        }
+        QGroupBox {
+            background-color: #ffffff;
+            border: 1px solid #dbeafe;
+            border-radius: 6px;
+            margin-top: 12px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 6px;
+            color: #1E3A8A;
+            font-weight: bold;
+        }
+        QLabel {
+            color: #1f2937;
+        }
+        QPushButton {
+            background-color: #1E88E5;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #1565C0;
+        }
+        QPushButton:disabled {
+            background-color: #93c5fd;
+            color: #e5e7eb;
+        }
+        QLineEdit, QSpinBox, QComboBox, QTextEdit {
+            background-color: #ffffff;
+            border: 1px solid #bfdbfe;
+            border-radius: 6px;
+            padding: 6px;
+        }
+        QProgressBar {
+            border: 1px solid #dbeafe;
+            border-radius: 6px;
+            text-align: center;
+            height: 18px;
+        }
+        QProgressBar::chunk {
+            background-color: #1E88E5;
+            border-radius: 6px;
+        }
+        """
+        self.setStyleSheet(theme_css)
 
     def build_login_page(self):
         """Page de connexion/inscription"""
@@ -162,7 +226,7 @@ class MainWindow(QMainWindow):
 
         signup_btn = QPushButton("Créer un compte et commencer")
         signup_btn.setMinimumHeight(40)
-        signup_btn.setStyleSheet("QPushButton { background-color: #2ecc71; color: white; font-weight: bold; font-size: 12pt; border-radius: 5px; }")
+        signup_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; font-weight: bold; font-size: 12pt; border-radius: 5px; }")
         signup_btn.clicked.connect(self.on_new_user_signup)
         new_layout.addWidget(signup_btn)
 
@@ -359,7 +423,7 @@ class MainWindow(QMainWindow):
 
         self.begin_btn = QPushButton("Commencer la séance")
         self.begin_btn.setEnabled(False)
-        self.begin_btn.setStyleSheet("QPushButton { background-color: #2ecc71; color: white; font-weight: bold; padding: 10px 20px; }")
+        self.begin_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; font-weight: bold; padding: 10px 20px; }")
         self.begin_btn.clicked.connect(self.show_session_page)
         self.begin_btn.hide()
         buttons_layout.addWidget(self.begin_btn)
@@ -470,7 +534,7 @@ class MainWindow(QMainWindow):
         self.finish_btn = QPushButton("Terminer")
         self.finish_btn.clicked.connect(self.finish_session)
         self.finish_btn.setEnabled(False)
-        self.finish_btn.setStyleSheet("QPushButton { background-color: #2ecc71; color: white; font-weight: bold; padding: 10px 20px; min-width: 120px; }")
+        self.finish_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; font-weight: bold; padding: 10px 20px; min-width: 120px; }")
         controls_layout.addWidget(self.finish_btn)
 
         timer_layout.addLayout(controls_layout)
@@ -619,7 +683,7 @@ class MainWindow(QMainWindow):
     def start_live(self, record=False):
         try:
             if self.live_reader is None:
-                self.live_reader = LiveLSLReader(stream_name='OpenSignals', forced_mapping={'ecg': 1, 'emg': 2, 'resp': 3})
+                self.live_reader = LiveLSLReader(stream_name='OpenSignals', forced_mapping={'ecg': 1, 'emg': 2, 'resp': 3}, timeout=5.0)
             already_running = self.live_reader._thread is not None and self.live_reader._thread.is_alive()
             if not already_running:
                 self.live_reader.start()
@@ -630,8 +694,20 @@ class MainWindow(QMainWindow):
             self.live_stop_btn.setEnabled(True)
             if not self.live_timer.isActive():
                 self.live_timer.start()
+        except RuntimeError as e:
+            error_msg = str(e)
+            if "No LSL stream found" in error_msg:
+                QMessageBox.warning(self, "Live", "Le flux OpenSignals n'a pas pu être récupéré.\nVérifiez que l'appareil est connecté et que la transmission est activée.")
+            else:
+                QMessageBox.critical(self, "Live", f"Impossible de démarrer le live: {e}")
+            self.live_status_label.setText("Statut: Erreur de connexion")
+            self.live_start_btn.setEnabled(True)
+            self.live_stop_btn.setEnabled(False)
         except Exception as e:
             QMessageBox.critical(self, "Live", f"Impossible de démarrer le live: {e}")
+            self.live_status_label.setText("Statut: Erreur")
+            self.live_start_btn.setEnabled(True)
+            self.live_stop_btn.setEnabled(False)
 
     def stop_live(self, save=False):
         try:
@@ -659,12 +735,12 @@ class MainWindow(QMainWindow):
         samples = self.live_reader.stop_recording()
         if not samples:
             return None
-        user_id = self.user_id_input.value()
-        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
-        os.makedirs(data_dir, exist_ok=True)
-        workout_id = self._next_workout_id(data_dir, user_id)
+        user_id = self.current_user_id
+        sessions_dir = os.path.join(self.output_dir, 'sessions')
+        os.makedirs(sessions_dir, exist_ok=True)
+        workout_id = self._next_workout_id(sessions_dir, user_id)
         fname = f"sport_user{user_id}_workout{workout_id}.txt"
-        path = os.path.join(data_dir, fname)
+        path = os.path.join(sessions_dir, fname)
 
         srate = int(self.live_reader.latest.get('srate') or 50)
         header_obj = {

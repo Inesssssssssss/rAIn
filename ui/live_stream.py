@@ -24,9 +24,10 @@ except ImportError:
     nk = None
 
 class LiveLSLReader:
-    def __init__(self, stream_name: str = 'OpenSignals', forced_mapping: Optional[Dict[str, int]] = None) -> None:
+    def __init__(self, stream_name: str = 'OpenSignals', forced_mapping: Optional[Dict[str, int]] = None, timeout: float = 5.0) -> None:
         self.stream_name = stream_name
         self.forced_mapping = forced_mapping or {}
+        self.timeout = timeout 
         self._inlet: Optional[StreamInlet] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -47,7 +48,7 @@ class LiveLSLReader:
     def start(self) -> None:
         if StreamInlet is None:
             raise RuntimeError("pylsl is not installed. Please install 'pylsl'.")
-        streams = resolve_byprop('name', self.stream_name)
+        streams = resolve_byprop('name', self.stream_name, timeout=self.timeout)
         if not streams:
             raise RuntimeError(f"No LSL stream found with name '{self.stream_name}'")
         self._inlet = StreamInlet(streams[0])
