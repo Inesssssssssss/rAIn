@@ -117,62 +117,76 @@ class LiveLSLReader:
             ch_bufs = [np.array(self._ch_bufs[i], dtype=float) for i in range(len(self._ch_bufs))]
             srate = float(self.latest.get('srate') or 50)
 
-        metrics = {'hr_bpm': None, 'hrv_rmssd_ms': None, 'resp_rate_bpm': None, 'emg_rms': None}
+        metrics = {'hr_bpm': None, 'hrv_rmssd_ms': None, 'hrv_sdnn_ms': None, 'resp_rate_bpm': None, 'emg_rms': None, 'emg_median_freq': None}
         if len(ch_bufs) == 0 or any(buf.size < 50 for buf in ch_bufs[:3]):
             return metrics
 
+        # ECG - Aligné avec process_data.py
         ecg_idx = self.forced_mapping.get('ecg', 1)
-
         ecg_raw = ch_bufs[ecg_idx]
-        ecg_mean = np.mean(np.abs(ecg_raw))
-        
-        if ecg_mean > 100:
-            ecg = (ecg_raw - 512.0) * 0.003188
-        else:
-            ecg = ecg_raw.copy()
-            if ecg_mean < 1.0:
-                ecg = ecg * 100.0
-
         self.latest['ecg_channel_idx'] = ecg_idx
 
         hr_bpm = None
         rmssd = None
+        sdnn = None
         if nk is not None:
             try:
-                _, info = nk.ecg_process(ecg, sampling_rate=int(srate))
+                # Nettoyage ECG comme dans process_data.py
+                ecg_cleaned = nk.ecg_clean(ecg_raw, sampling_rate=int(srate), method="neurokit")
+                _, info = nk.ecg_process(ecg_cleaned, sampling_rate=int(srate))
                 r_peaks = info.get("ECG_R_Peaks", np.array([]))
                 
                 if r_peaks is not None and len(r_peaks) >= 2:
-                    hr = nk.signal_rate(r_peaks, sampling_rate=int(srate), desired_length=len(ecg))
+                    hr = nk.signal_rate(r_peaks, sampling_rate=int(srate), desired_length=len(ecg_cleaned))
                     hr_mean = np.nanmean(hr)
                     if not np.isnan(hr_mean) and hr_mean > 0:
                         hr_bpm = float(hr_mean)
-                        hrv = nk.hrv_time(info, sampling_rate=int(srate), show=False)
-                        if hrv is not None:
-                            rmssd = float(hrv.get("HRV_RMSSD", np.nan))
-                            if np.isnan(rmssd):
-                                rmssd = None
+                    
+                    # Calculer HRV (RMSSD et SDNN)
+                    hrv = nk.hrv_time(info, sampling_rate=int(srate), show=False)
+                    if hrv is not None:
+                        rmssd_val = float(hrv.get("HRV_RMSSD", np.nan))
+                        sdnn_val = float(hrv.get("HRV_SDNN", np.nan))
+                        if not np.isnan(rmssd_val):
+                            rmssd = rmssd_val
+                        if not np.isnan(sdnn_val):
+                            sdnn = sdnn_val
             except Exception:
                 pass
 
         metrics['hr_bpm'] = hr_bpm
         metrics['hrv_rmssd_ms'] = rmssd
+        metrics['hrv_sdnn_ms'] = sdnn
 
+        # Respiration - Aligné avec process_data.py
         resp_rate = None
         resp_idx = self.forced_mapping.get('resp', 3)
         if len(ch_bufs) > resp_idx and ch_bufs[resp_idx].size > 50:
             try:
                 resp = ch_bufs[resp_idx]
-                if find_peaks:
-                    min_dist = int(max(1, srate * 1.0))
-                    rp, _ = find_peaks(resp, distance=min_dist, prominence=np.std(resp) * 0.3)
-                    if rp.size >= 2:
-                        resp_rate = (rp.size / (len(resp) / srate)) * 60.0
+                # Filtrage basse fréquence comme dans process_data.py
+                if nk:
+                    resp_cleaned = nk.signal_filter(resp, sampling_rate=int(srate), lowcut=None, highcut=2, method="butterworth", order=4)
+                    # Utiliser rsp_process comme dans process_data.py
+                    rsp_signals, _ = nk.rsp_process(resp_cleaned, sampling_rate=int(srate))
+                    rate_series = rsp_signals.get("RSP_Rate")
+                    if rate_series is not None:
+                        resp_rate = float(np.nanmean(rate_series))
+                else:
+                    # Fallback avec find_peaks si neurokit2 n'est pas disponible
+                    if find_peaks:
+                        min_dist = int(max(1, srate * 1.0))
+                        rp, _ = find_peaks(resp, distance=min_dist, prominence=np.std(resp) * 0.3)
+                        if rp.size >= 2:
+                            resp_rate = (rp.size / (len(resp) / srate)) * 60.0
             except Exception:
                 pass
         metrics['resp_rate_bpm'] = resp_rate
 
+        # EMG - Aligné avec process_data.py
         emg_idx = self.forced_mapping.get('emg', 2)
+        emg_rms = None
+        emg_mf = None
         if len(ch_bufs) > emg_idx and ch_bufs[emg_idx].size > 10:
             try:
                 emg = ch_bufs[emg_idx]
@@ -180,9 +194,28 @@ class LiveLSLReader:
                     emg_cleaned = nk.emg_clean(emg, sampling_rate=int(srate))
                 else:
                     emg_cleaned = emg
-                metrics['emg_rms'] = float(np.sqrt(np.mean(np.square(emg_cleaned))))
+                
+                # Calculer RMS sur valeur absolue comme dans process_data.py
+                emg_rect = np.abs(emg_cleaned)
+                emg_rms = float(np.sqrt(np.mean(np.square(emg_rect)))) if emg_rect.size else None
+                
+                # Calculer fréquence médiane comme dans process_data.py
+                if nk:
+                    nyquist = srate / 2.0
+                    low, high = 20.0, min(450.0, nyquist - 1.0)
+                    if high > low:
+                        try:
+                            power = nk.signal_power(emg_cleaned, sampling_rate=int(srate), frequency_band=[low, high])
+                            emg_mf = float(power.get("Median Frequency", np.nan))
+                            if np.isnan(emg_mf):
+                                emg_mf = None
+                        except Exception:
+                            pass
             except Exception:
                 pass
+        
+        metrics['emg_rms'] = emg_rms
+        metrics['emg_median_freq'] = emg_mf
 
         return metrics
 

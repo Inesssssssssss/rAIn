@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from ai.training_recommender import TrainingRecommender
 from ui.live_stream import LiveLSLReader
+from ai.process_data import process_file
 
 
 
@@ -594,10 +595,17 @@ class MainWindow(QMainWindow):
         # Gérer le cas de l'entraînement initial (phases fixes)
         if rec.get('is_initial'):
             # Entraînement initial: 3 min marche, 5 min course, 2 min marche
+            """
             self.initial_phases = [
                 {'type': 'walk', 'duration': 3 * 60, 'label': 'Marche (échauffement)'},
                 {'type': 'run', 'duration': 5 * 60, 'label': 'Course (phase principale)'},
                 {'type': 'walk', 'duration': 2 * 60, 'label': 'Marche (récupération)'}
+            ]
+            """
+            self.initial_phases = [
+                {'type': 'walk', 'duration': 10, 'label': 'Marche (échauffement)'},
+                {'type': 'run', 'duration': 10, 'label': 'Course (phase principale)'},
+                {'type': 'walk', 'duration': 10, 'label': 'Marche (récupération)'}
             ]
             self.current_phase_index = 0
             self.phase_label.setText("Phase: Marche (échauffement)")
@@ -683,7 +691,7 @@ class MainWindow(QMainWindow):
     def start_live(self, record=False):
         try:
             if self.live_reader is None:
-                self.live_reader = LiveLSLReader(stream_name='OpenSignals', forced_mapping={'ecg': 1, 'emg': 2, 'resp': 3}, timeout=5.0)
+                self.live_reader = LiveLSLReader(stream_name='OpenSignals', forced_mapping={'ecg': 1, 'emg': 2, 'resp': 3}, timeout=10.0)
             already_running = self.live_reader._thread is not None and self.live_reader._thread.is_alive()
             if not already_running:
                 self.live_reader.start()
@@ -774,12 +782,19 @@ class MainWindow(QMainWindow):
             seq = 0
             for _, sample in samples:
                 row = [seq, 0, 0, 0, 0]
-                analog = list(sample)
+                # Ignorer le premier élément de sample qui est le nSeq du LSL stream
+                # et prendre les 6 canaux analogiques suivants
+                analog = list(sample[1:7]) if len(sample) > 1 else list(sample)
                 if len(analog) < 6:
                     analog.extend([0] * (6 - len(analog)))
                 row.extend(analog[:6])
-                f.write("\t".join(str(v) for v in row) + "\t\n")
-                seq += 1
+                # Convertir toutes les valeurs en int pour correspondre au format OpenSignals
+                f.write("\t".join(str(int(v)) for v in row) + "\t\n")
+                seq = (seq + 1) % 16  # Cycle 0-15
+        
+        # Traiter automatiquement les données et mettre à jour le dataset
+        self._update_dataset_with_session(path, user_id, workout_id)
+        
         return os.path.abspath(path)
 
     def _next_workout_id(self, data_dir, user_id):
@@ -796,6 +811,42 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         return max_id + 1
+
+    def _update_dataset_with_session(self, session_path, user_id, workout_id):
+        """
+        Traite la nouvelle séance et l'ajoute au dataset des features.
+        """
+        try:
+            # Traiter le fichier pour extraire les features
+            df_new = process_file(session_path, window_s=20, overlap=0.5, label=1, workout_id=workout_id)
+            
+            if df_new.empty:
+                print(f"Aucune donnée extraite de {session_path}")
+                return
+            
+            # Ajouter les métadonnées
+            df_new['activity'] = 'sport'
+            df_new['user'] = user_id
+            
+            # Charger le dataset existant ou créer un nouveau
+            features_dir = os.path.join(self.output_dir, 'features')
+            os.makedirs(features_dir, exist_ok=True)
+            dataset_path = os.path.join(features_dir, 'features_dataset.csv')
+            
+            if os.path.exists(dataset_path):
+                df_existing = pd.read_csv(dataset_path)
+                df_updated = pd.concat([df_existing, df_new], ignore_index=True)
+            else:
+                df_updated = df_new
+            
+            # Sauvegarder le dataset mis à jour
+            df_updated.to_csv(dataset_path, index=False)
+            print(f"Dataset mis à jour: {len(df_new)} nouvelles fenêtres ajoutées (total: {len(df_updated)})")
+            
+        except Exception as e:
+            print(f"Erreur lors de la mise à jour du dataset: {e}")
+            import traceback
+            traceback.print_exc()
 
     @Slot()
     def update_live_values(self):
