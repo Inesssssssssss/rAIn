@@ -576,13 +576,12 @@ class MainWindow(QMainWindow):
         lines.append("")
 
         lines.append(f"État général: {recovery['status'].upper()} ({recovery['score']}/100)")
-        lines.append(recovery['message'])
         lines.append("")
 
         if recovery.get('details'):
             lines.append("Ce qui explique cette note:")
             for detail in recovery['details']:
-                lines.append(f"• {detail}")
+                lines.append(f"- {detail}")
             lines.append("")
 
         if recovery.get('factors'):
@@ -620,15 +619,15 @@ class MainWindow(QMainWindow):
         if rec.get('warnings'):
             lines.append("Attention:")
             for w in rec['warnings']:
-                lines.append(f"• {w}")
+                lines.append(f"- {w}")
             lines.append("")
 
         lines.append("Conseils à suivre:")
         if rec.get('recommendations'):
             for r in rec['recommendations']:
-                lines.append(f"• {r}")
+                lines.append(f"- {r}")
         else:
-            lines.append("• Pas de conseil spécifique, écoutez vos sensations.")
+            lines.append("- Pas de conseil spécifique, écoutez vos sensations.")
 
         text = "\n".join(lines)
 
