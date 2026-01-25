@@ -4,11 +4,9 @@ import pandas as pd
 import neurokit2 as nk
 import os
 import re
-import pandas as pd
 
 
 def segment_signal(signal, fs, window_s=10, overlap=0.5):
-    # Decoupe le signal en segments de window_s secondes avec overlap  
     step = int(window_s * fs * (1 - overlap))
     size = int(window_s * fs)
     if step <= 0 or size <= 0:
@@ -17,7 +15,6 @@ def segment_signal(signal, fs, window_s=10, overlap=0.5):
 
 
 def ecg_features(ecg_segment, fs):
-    # Nettoyage et extraction des features ECG
     try:
         _, info = nk.ecg_process(ecg_segment, sampling_rate=fs)
         hrv = nk.hrv_time(info, sampling_rate=fs, show=False)
@@ -32,15 +29,12 @@ def ecg_features(ecg_segment, fs):
 
 
 def emg_features(emg_segment, fs):
-    # Nettoyage EMG et extraction de features simples (lissage pour données plus robustes)
     try:
         emg_cleaned = nk.emg_clean(emg_segment, sampling_rate=fs)
     except Exception:
         emg_cleaned = emg_segment
     emg_rect = np.abs(emg_cleaned)
-
     emg_rms = float(np.sqrt(np.mean(np.square(emg_rect)))) if emg_rect.size else np.nan
-
     nyquist = fs / 2.0
     low, high = 20.0, min(450.0, nyquist - 1.0)
     mf = np.nan
@@ -49,45 +43,19 @@ def emg_features(emg_segment, fs):
             power = nk.signal_power(emg_cleaned, sampling_rate=fs, frequency_band=[low, high])
             mf = float(power.get("Median Frequency", np.nan))
         except Exception:
-            mf = np.nan
-        # Fallback robuste via Welch si toujours NaN
-        """
-        if np.isnan(mf):
-            try:
-                from scipy.signal import welch
-                f, Pxx = welch(emg_cleaned, fs=fs, nperseg=min(len(emg_cleaned), 1024))
-                mask = (f >= low) & (f <= high)
-                f_band = f[mask]
-                P_band = Pxx[mask]
-                if f_band.size and np.sum(P_band) > 0:
-                    cumsum = np.cumsum(P_band)
-                    total = cumsum[-1]
-                    idx = np.searchsorted(cumsum, total * 0.5)
-                    mf = float(f_band[min(idx, len(f_band) - 1)])
-            except Exception:
-                mf = np.nan
-        """
+            pass
     return {"emg_rms": emg_rms, "emg_median_freq": mf}
 
 
 def resp_features(resp_segment, fs):
-    # Filtrage simple basse fréquence
     try:
         resp_cleaned = nk.signal_filter(resp_segment, sampling_rate=fs, lowcut=None, highcut=2, method="butterworth", order=4)
     except Exception:
         resp_cleaned = resp_segment
-    # Fréquence respiratoire/min via pipeline respiration NeuroKit
     try:
         rsp_signals, _ = nk.rsp_process(resp_cleaned, sampling_rate=fs)
         rate_series = rsp_signals.get("RSP_Rate")
-        if rate_series is not None:
-            resp_rate = float(np.nanmean(rate_series))
-        else:
-            """
-            # Fallback: décompte des pics
-            peaks, _ = nk.signal_findpeaks(resp_cleaned)
-            resp_rate = len(peaks) / (len(resp_cleaned) / fs) * 60 if len(resp_cleaned) and fs else np.nan
-            """
+        resp_rate = float(np.nanmean(rate_series)) if rate_series is not None else np.nan
     except Exception:
         resp_rate = np.nan
     return {"resp_rate_bpm": resp_rate}
@@ -95,10 +63,7 @@ def resp_features(resp_segment, fs):
 
 
 def derive_resp_from_emg(emg_signal, fs):
-    """Construit une respiration à partir d'un EMG respiratoire.
-    Étapes: nettoyage EMG, rectification, filtrage passe-bas ~2 Hz pour obtenir l'enveloppe respiratoire.
-    Retourne un np.ndarray ou None en cas d'échec.
-    """
+    """Derive respiratory signal from EMG using filtering."""
     try:
         emg_cleaned = nk.emg_clean(emg_signal, sampling_rate=fs)
     except Exception:
@@ -113,7 +78,7 @@ def derive_resp_from_emg(emg_signal, fs):
 
 
 def basic_stats(x):
-    """Statistiques simples"""
+    """Compute basic statistics."""
     x = np.asarray(x)
     if x.size == 0:
         return {
@@ -135,12 +100,7 @@ def basic_stats(x):
 
 
 def process_file(file_path, window_s=10, overlap=0.5, label=None, workout_id=None):
-    """
-    - charge le fichier OpenSignals
-    - nettoie ECG/EMG/Resp
-    - découpe en fenêtres et extrait features
-    - retourne un DataFrame
-    """
+    """Load OpenSignals file, extract features by window."""
     data, header = bsnb.load(file_path, get_header=True)
     fs = int(header.get("sampling rate") or header.get("Sampling Rate"))
 
@@ -149,16 +109,11 @@ def process_file(file_path, window_s=10, overlap=0.5, label=None, workout_id=Non
     emg_leg = data.get('CH2')
     emg_resp = data.get('CH3')
 
-    # Nettoyage
     try:
         ecg_cleaned = nk.ecg_clean(ecg, sampling_rate=fs, method="neurokit")
     except Exception:
         ecg_cleaned = ecg
-
-    # Respiration dérivée de l'EMG
     resp_from_emg = derive_resp_from_emg(np.asarray(emg_resp), fs) if emg_resp is not None else None
-
-    # Fenêtre
     ecg_windows = segment_signal(np.asarray(ecg_cleaned), fs, window_s, overlap) if ecg is not None else []
     emg_windows = segment_signal(np.asarray(emg_leg), fs, window_s, overlap) if emg_leg is not None else []
     resp_windows = segment_signal(np.asarray(resp_from_emg), fs, window_s, overlap) if resp_from_emg is not None else []
@@ -187,11 +142,7 @@ def process_file(file_path, window_s=10, overlap=0.5, label=None, workout_id=Non
 
 
 def build_dataset_from_folder(data_folder, window_s=20, overlap=0.5, label_map=None):
-    """
-    Construit un dataset enrichi (features + stats) à partir des fichiers dans `data_folder`.
-
-    `label_map` optionnel: dict activité->label fatigue, ex: {"start": 0, "sport": 1, "recovery": 0}
-    """
+    """Build feature dataset from folder of OpenSignals files."""
     files = [f for f in os.listdir(data_folder) if f.lower().endswith('.txt')]
     dfs = []
     for name in files:

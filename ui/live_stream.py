@@ -6,17 +6,12 @@ import numpy as np
 try:
     from scipy.signal import find_peaks, butter, filtfilt
 except Exception:
-    find_peaks = None
-    butter = None
-    filtfilt = None
+    pass
 
 try:
     from pylsl import StreamInlet, resolve_byprop, resolve_streams
 except ImportError:
-    # Allow import even if pylsl not installed; raise on start
-    StreamInlet = None
-    resolve_byprop = None
-    resolve_streams = None
+    pass
 
 try:
     import neurokit2 as nk
@@ -24,6 +19,7 @@ except ImportError:
     nk = None
 
 class LiveLSLReader:
+    """Live stream reader from LSL (Lab Streaming Layer) compatible devices."""
     def __init__(self, stream_name: str = 'OpenSignals', forced_mapping: Optional[Dict[str, int]] = None, timeout: float = 5.0) -> None:
         self.stream_name = stream_name
         self.forced_mapping = forced_mapping or {}

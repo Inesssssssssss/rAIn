@@ -15,8 +15,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 from ai.fatigue_classifier import FatigueClassifier
 
-# Obtenir le répertoire du script (déjà défini)
-
 
 class TrainingRecommender:
     """
@@ -126,21 +124,26 @@ class TrainingRecommender:
         if self.user_history is None or len(self.user_history) == 0:
             return {}
         
-        # Si workout_id existe, regrouper par workout_id
-        if 'workout_id' in self.user_history.columns:
-            # Prendre le dernier workout_id (la séance la plus récente)
-            unique_workouts = self.user_history['workout_id'].unique()
-            last_workout_id = unique_workouts[-1]  # Dernier workout
+        # Si workout_id existe et n'est pas NaN, regrouper par workout_id
+        if 'workout_id' in self.user_history.columns and self.user_history['workout_id'].notna().any():
+            # Prendre le dernier workout_id (la séance la plus récente) 
+            # Filtrer les NaN d'abord
+            non_nan_workouts = self.user_history['workout_id'].dropna().unique()
             
-            # Toutes les données de cette séance (start + sport + recovery)
-            data = self.user_history[self.user_history['workout_id'] == last_workout_id].copy()
+            if len(non_nan_workouts) > 0:
+                last_workout_id = non_nan_workouts[-1]  # Dernier workout non-NaN
+                # Toutes les données de cette séance (start + sport + recovery)
+                data = self.user_history[self.user_history['workout_id'] == last_workout_id].copy()
+            else:
+                # Si tous les workout_id sont NaN, utiliser toutes les données
+                data = self.user_history.copy()
             
             # Identifier l'activité principale (souvent 'sport' est l'activité clé)
             activity_counts = data['activity'].value_counts()
             main_activity = activity_counts.index[0] if len(activity_counts) > 0 else 'unknown'
             
         else:
-            # Rétrocompatibilité: si pas de workout_id, prendre toutes les données du user
+            # Rétrocompatibilité: si pas de workout_id ou tous NaN, prendre toutes les données du user
             # (considérées comme une seule séance historique)
             data = self.user_history.copy()
             activity_counts = data['activity'].value_counts()
@@ -209,80 +212,124 @@ class TrainingRecommender:
         Évalue l'état de récupération basé sur la dernière séance et le classificateur.
         
         Returns:
-            Dictionnaire avec l'évaluation de récupération
+            Dictionnaire avec l'évaluation de récupération et détails des facteurs
         """
         last_stats = self.analyze_last_session()
         
         if not last_stats:
-            return {'status': 'unknown', 'score': 0}
+            return {'status': 'unknown', 'score': 0, 'factors': {}, 'details': []}
         
         # Score de récupération (0-100) - basé principalement sur le classificateur
         recovery_score = 50  # Score neutre de base
+        factors = {}  # Détailler les contributions à chaque facteur
+        details = []  # Explication lisible pour l'utilisateur
         
         # ===== PRÉDICTION DU CLASSIFICATEUR (poids principal) =====
         fatigue_prob = last_stats.get('fatigue_probability', 0)
         fatigue_trend = last_stats.get('fatigue_trend', 'stable')
         
+        fatigue_adjustment = 0
         # Fatigue prédite élevée = score bas
         if fatigue_prob > 0.7:
-            recovery_score -= 30
+            fatigue_adjustment = -30
+            details.append(f"Fatigue prédite très élevée ({fatigue_prob:.1%}) : -30 points")
         elif fatigue_prob > 0.5:
-            recovery_score -= 20
+            fatigue_adjustment = -20
+            details.append(f"Fatigue prédite élevée ({fatigue_prob:.1%}) : -20 points")
         elif fatigue_prob > 0.3:
-            recovery_score -= 10
+            fatigue_adjustment = -10
+            details.append(f"Fatigue prédite modérée ({fatigue_prob:.1%}) : -10 points")
         else:
-            recovery_score += 15  # Bonne récupération
+            fatigue_adjustment = 15  # Bonne récupération
+            details.append(f"Bonne récupération détectée ({fatigue_prob:.1%} fatigue) : +15 points")
+        
+        recovery_score += fatigue_adjustment
+        factors['fatigue_probability'] = {'value': fatigue_prob, 'adjustment': fatigue_adjustment}
         
         # Tendance de fatigue
+        trend_adjustment = 0
         if fatigue_trend == 'increasing':
-            recovery_score -= 15  # Fatigue croissante = mauvais signe
+            trend_adjustment = -15  # Fatigue croissante = mauvais signe
+            details.append(f"Tendance de fatigue croissante : -15 points")
         elif fatigue_trend == 'decreasing':
-            recovery_score += 10  # Récupération en cours
+            trend_adjustment = 10  # Récupération en cours
+            details.append(f"Tendance de fatigue décroissante (récupération en cours) : +10 points")
+        else:
+            details.append(f"Tendance de fatigue stable : 0 point")
+        
+        recovery_score += trend_adjustment
+        factors['fatigue_trend'] = {'value': fatigue_trend, 'adjustment': trend_adjustment}
         
         # ===== FACTEURS PHYSIOLOGIQUES COMPLÉMENTAIRES =====
         
         # HRV élevée = bonne récupération
-        if last_stats['hrv_sdnn_mean'] > 600:
-            recovery_score += 15
-        elif last_stats['hrv_sdnn_mean'] > 450:
-            recovery_score += 5
-        elif last_stats['hrv_sdnn_mean'] < 400:
-            recovery_score -= 10
+        hrv_adjustment = 0
+        hrv_value = last_stats['hrv_sdnn_mean']
+        if hrv_value > 600:
+            hrv_adjustment = 15
+            details.append(f"HRV très élevée ({hrv_value:.0f} ms) : +15 points")
+        elif hrv_value > 450:
+            hrv_adjustment = 5
+            details.append(f"HRV bonne ({hrv_value:.0f} ms) : +5 points")
+        elif hrv_value < 400:
+            hrv_adjustment = -10
+            details.append(f"HRV basse ({hrv_value:.0f} ms) : -10 points")
+        else:
+            details.append(f"HRV modérée ({hrv_value:.0f} ms) : 0 point")
+        
+        recovery_score += hrv_adjustment
+        factors['hrv_sdnn'] = {'value': hrv_value, 'adjustment': hrv_adjustment, 'unit': 'ms'}
         
         # HR basse = bonne récupération
-        if last_stats['hr_mean'] < 65:
-            recovery_score += 10
-        elif last_stats['hr_mean'] < 75:
-            recovery_score += 5
-        elif last_stats['hr_mean'] > 85:
-            recovery_score -= 10
+        hr_adjustment = 0
+        hr_value = last_stats['hr_mean']
+        if hr_value < 65:
+            hr_adjustment = 10
+            details.append(f"Fréquence cardiaque basse ({hr_value:.0f} bpm) : +10 points")
+        elif hr_value < 75:
+            hr_adjustment = 5
+            details.append(f"Fréquence cardiaque modérée ({hr_value:.0f} bpm) : +5 points")
+        elif hr_value > 85:
+            hr_adjustment = -10
+            details.append(f"Fréquence cardiaque élevée ({hr_value:.0f} bpm) : -10 points")
+        else:
+            details.append(f"Fréquence cardiaque normale ({hr_value:.0f} bpm) : 0 point")
 
+        recovery_score += hr_adjustment
+        factors['hr_mean'] = {'value': hr_value, 'adjustment': hr_adjustment, 'unit': 'bpm'}
+        
         # EMG élevée = tension musculaire
-        if last_stats['emg_rms_mean'] > 15:
-            recovery_score -= 10
+        emg_adjustment = 0
+        emg_value = last_stats['emg_rms_mean']
+        if emg_value > 15:
+            emg_adjustment = -10
+            details.append(f"Tension musculaire élevée ({emg_value:.2f}) : -10 points")
+        else:
+            details.append(f"Tension musculaire normale ({emg_value:.2f}) : 0 point")
+        
+        recovery_score += emg_adjustment
+        factors['emg_rms'] = {'value': emg_value, 'adjustment': emg_adjustment}
         
         # Limiter entre 0 et 100
         recovery_score = max(0, min(100, recovery_score))
         
-        # Catégoriser avec ajustements basés sur fatigue
+        # Catégoriser le statut
         if recovery_score >= 60:
             status = 'good'
-            message = "Bonne récupération. Prêt pour un entraînement intense."
         elif recovery_score >= 30:
             status = 'moderate'
-            message = "Récupération modérée. Privilégier un entraînement modéré."
         else:
             status = 'poor'
-            message = "Récupération insuffisante. Entraînement léger."
         
         return {
             'status': status,
             'score': recovery_score,
-            'message': message,
             'last_activity': last_stats['activity'],
             'last_fatigue_ratio': last_stats.get('fatigue_ratio', 0),
             'fatigue_probability': fatigue_prob,
-            'fatigue_trend': fatigue_trend
+            'fatigue_trend': fatigue_trend,
+            'factors': factors, 
+            'details': details  
         }
     
     def recommend_training(self) -> Dict:
@@ -295,8 +342,7 @@ class TrainingRecommender:
         recovery = self.evaluate_recovery_status()
         last_stats = self.analyze_last_session()
         
-        # Déterminer HR_repos et HR_max à partir des données historiques
-        # (au lieu de charger depuis un profil fichier)
+
         if self.user_profile:
             hr_repos = self.user_profile.get('HR_repos', 65)
             hr_max = self.user_profile.get('HR_max', 180)
@@ -314,30 +360,30 @@ class TrainingRecommender:
         fatigue_prob = last_stats.get('fatigue_probability', 0)
         fatigue_trend = last_stats.get('fatigue_trend', 'stable')
         
-        # Recommandation basée sur le score de récupération ET la fatigue prédite
+        # Recommandation basée uniquement sur le score de récupération
         # 3 niveaux de recommandation
-        if recovery['score'] >= 60 and fatigue_prob < 0.5:
-            # Entraînement modéré à intense
-            intensity_name = "Modéré à Intense"
+        if recovery['score'] >= 60:
+            intensity_name = "Intense"
             hr_target_min = hr_repos + 0.6 * hr_reserve  # 60-80% de la réserve
             hr_target_max = hr_repos + 0.8 * hr_reserve
             duration = 30
-            description = "Séance d'entraînement modéré à intense. Bonne forme détectée."
+            description = "Bonne forme. Séance intense."
             
-        elif recovery['score'] >= 30 and fatigue_prob < 0.7:
-            # Entraînement léger
-            intensity_name = "Léger"
+        elif recovery['score'] >= 30:
+            # Entraînement modéré
+            intensity_name = "Modéré"
             hr_target_min = hr_repos + 0.45 * hr_reserve  # 45-60% de la réserve
             hr_target_max = hr_repos + 0.6 * hr_reserve
             duration = 25
-            description = "Séance d'entraînement léger. Signes de fatigue modérée, intensité réduite."
+            description = "Fatigue modérée. Séance modérée, ne poussez pas trop."
             
         else:
-            intensity_name = "Récupération Active"
+            # Entraînement léger
+            intensity_name = "Léger"
             hr_target_min = hr_repos + 0.3 * hr_reserve  # 30-45% de la réserve
             hr_target_max = hr_repos + 0.45 * hr_reserve
             duration = 20
-            description = "Récupération active recommandée. Fatigue importante détectée, priorité à la récupération."
+            description = "Fatigue marquée. Entrainement léger privilégié."
         
         
         return {
@@ -350,79 +396,58 @@ class TrainingRecommender:
             'hr_max': int(hr_max),
             'fatigue_probability': fatigue_prob,
             'fatigue_trend': fatigue_trend,
-            'recommendations': self._generate_specific_recommendations(recovery['score'], last_stats, fatigue_prob, fatigue_trend),
-            'adaptive_warnings': self._generate_adaptive_warnings(fatigue_prob, fatigue_trend)
+            'recommendations': self._generate_adaptive_recommendations(recovery['score'], last_stats, fatigue_prob, fatigue_trend)['recommendations'],
+            'warnings': self._generate_adaptive_recommendations(recovery['score'], last_stats, fatigue_prob, fatigue_trend)['warnings']
         }
     
-    def _generate_adaptive_warnings(self, fatigue_prob: float, fatigue_trend: str) -> List[str]:
-        """Génère des avertissements adaptatifs basés sur la fatigue prédite."""
-        warnings = []
+    def _generate_adaptive_recommendations(self, recovery_score: float, last_stats: Dict, 
+                                           fatigue_prob: float, fatigue_trend: str) -> Dict[str, List[str]]:
+        """
+        Génère des recommandations et avertissements adaptatifs basés sur la fatigue et les données.
         
-        if fatigue_prob > 0.7:
-            warnings.append("ALERTE: Probabilité de fatigue très élevée ({:.0%})".format(fatigue_prob))
-            warnings.append("-> Envisagez de reporter l'entraînement ou de faire uniquement de la récupération")
-        elif fatigue_prob > 0.5:
-            warnings.append("ATTENTION: Fatigue modérée détectée ({:.0%})".format(fatigue_prob))
-            warnings.append("-> Réduisez l'intensité et restez attentif aux signaux corporels")
+        Returns:
+            Dictionnaire avec 'warnings' et 'recommendations'
+        """
+        warnings = []
+        recommendations = []
         
         if fatigue_trend == 'increasing':
-            warnings.append("TENDANCE: Fatigue en augmentation au cours de la dernière séance")
-            warnings.append("-> L'entraînement proposé est adapté à la baisse pour favoriser la récupération")
+            warnings.append("Fatigue en hausse sur la dernière séance. Baissez la charge si trop compliqué.")
         elif fatigue_trend == 'decreasing':
-            warnings.append("INFO: Bonne récupération observée au cours de la dernière séance")
+            warnings.append("Récupération en cours sur la dernière séance. Augmentez doucement si ok.")
         
-        return warnings
-    
-    def _generate_specific_recommendations(self, recovery_score: float, last_stats: Dict, 
-                                           fatigue_prob: float, fatigue_trend: str) -> List[str]:
-        """Génère des recommandations spécifiques basées sur les données et le classificateur."""
-        recs = []
         
-        # Recommandations basées sur la probabilité de fatigue
+        # Recommendations par niveau de fatigue
         if fatigue_prob < 0.3:
-            recs.append("Faible probabilité de fatigue ({:.0%}) - Excellent état!".format(fatigue_prob))
-            recs.append("- Profitez de cette forme pour progresser")
-            recs.append("- Incluez des exercices de haute intensité si entraînement intense")
+            recommendations.append("Profitez de votre bonne forme pour progresser.")
+            recommendations.append("Ajoutez quelques accélérations si vous êtes à l'aise.")
         
         elif fatigue_prob < 0.5:
-            recs.append("Probabilité de fatigue modérée ({:.0%}) - État normal".format(fatigue_prob))
-            recs.append("- Entraînement classique possible")
-            recs.append("- Surveillez l'évolution de votre fatigue pendant l'effort")
+            recommendations.append("Fatigue modérée : restez sur le plan prévu.")
+            recommendations.append("Surveillez vos sensations, ralentissez si besoin.")
         
         elif fatigue_prob < 0.7:
-            recs.append("Probabilité de fatigue élevée ({:.0%}) - Soyez prudent".format(fatigue_prob))
-            recs.append("- Réduisez l'intensité et la durée prévues")
-            recs.append("- Arrêtez si les signaux de fatigue s'intensifient")
+            recommendations.append("Fatigue élevée : raccourcissez la séance et restez très facile.")
+            recommendations.append("Arrêtez si la fatigue augmente.")
         
         else:
-            recs.append("Probabilité de fatigue très élevée ({:.0%}) - Repos recommandé".format(fatigue_prob))
-            recs.append("- Privilégiez le repos ou récupération très légère")
-            recs.append("- Ne forcez pas - écoutez votre corps")
+            recommendations.append("Fatigue très élevée : privilégiez entraînement très léger.")
+            recommendations.append("Ne forcez pas et écoutez votre corps.")
         
-        # Recommandations basées sur la tendance
-        if fatigue_trend == 'increasing':
-            recs.append("Tendance: Fatigue croissante détectée")
-            recs.append("- Le corps accumule de la fatigue - attention au surentraînement")
-            recs.append("- Intégrez plus de récupération dans votre planning")
-        elif fatigue_trend == 'decreasing':
-            recs.append("Tendance: Récupération en cours")
-            recs.append("- Continuez sur cette lancée avec une charge progressive")
-        
-        # Recommandations basées sur HRV
+        # Recommendations basées sur HRV
         if last_stats and last_stats.get('hrv_sdnn_mean', 0) < 400:
-            recs.append("- HRV basse détectée - évitez le surentraînement")
+            recommendations.append("HRV basse détectée : évitez le surentraînement et gardez la séance légère.")
         elif last_stats and last_stats.get('hrv_sdnn_mean', 0) > 700:
-            recs.append("HRV excellente - système nerveux bien récupéré")
+            recommendations.append("HRV excellente : votre système nerveux est reposé.")
         
-        # Recommandations basées sur EMG
+        # Recommendations basées sur EMG
         if last_stats and last_stats.get('emg_rms_mean', 0) > 15:
-            recs.append("- Tension musculaire élevée - incluez des étirements/massage")
+            recommendations.append("Tension musculaire élevée : ajoutez étirements ou auto-massage.")
         
-        # Recommandations basées sur l'activité précédente
-        if last_stats and last_stats.get('activity') == 'sport' and fatigue_prob > 0.5:
-            recs.append("- Séance intense récente + fatigue = besoin de récupération supplémentaire")
-        
-        return recs
+        return {
+            'warnings': warnings,
+            'recommendations': recommendations
+        }
     
     def generate_report(self, user_id: int) -> str:
         """
@@ -484,16 +509,16 @@ class TrainingRecommender:
         report.append(f"  Zone HR cible: {recommendation['hr_target_range'][0]}-{recommendation['hr_target_range'][1]} bpm")
         report.append(f"  Description: {recommendation['description']}")
         
-        # Avertissements adaptatifs
-        if recommendation.get('adaptive_warnings'):
-            report.append("\nAVERTISSEMENTS ADAPTATIFS")
-            for warning in recommendation['adaptive_warnings']:
+        # Avertissements adaptatifs et recommandations
+        if recommendation.get('warnings'):
+            report.append("\nAvertissements")
+            for warning in recommendation['warnings']:
                 report.append(f"  {warning}")
         
-        # Recommandations spécifiques
-        report.append("\nRECOMMANDATIONS SPECIFIQUES")
-        for rec in recommendation['recommendations']:
-            report.append(f"  {rec}")
+        if recommendation.get('recommendations'):
+            report.append("\nRecommandations")
+            for rec in recommendation['recommendations']:
+                report.append(f"  {rec}")
         
         report.append("\n" + "=" * 70)
         

@@ -1,7 +1,6 @@
 import sys
 import os
 import json
-import csv
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                 QLabel, QPushButton, QSpinBox, QTextEdit, 
                                 QProgressBar, QGroupBox, QMessageBox, QStackedWidget,
@@ -45,6 +44,9 @@ class MainWindow(QMainWindow):
         self.is_new_user = False
         self.initial_phases = None
         self.current_phase_index = 0
+        
+        # Variables pour l'avertissement BPM
+        self.hr_max_threshold = None  # FC max de l'utilisateur
         
         # Chemin des fichiers de profil utilisateur
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -157,16 +159,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # Titre
-        title = QLabel("Bienvenue dans rAIN")
+        title = QLabel("Bienvenue dans rAIn")
         title_font = QFont("Arial", 16, QFont.Bold)
         title.setFont(title_font)
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
-
-        subtitle = QLabel("Gestionnaire d'entraînement adaptatif par IA")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #7f8c8d; font-size: 11pt;")
-        layout.addWidget(subtitle)
 
         layout.addSpacing(30)
 
@@ -262,10 +259,19 @@ class MainWindow(QMainWindow):
         sex = self.new_user_sex.currentText()
         fitness = self.new_user_fitness.currentText()
         
-        # Générer des paramètres physiologiques aléatoires réalistes
-        hr_repos = np.random.uniform(50, 90)
-        hr_max = np.random.uniform(170, 200)
-        rr_repos = np.random.uniform(10, 30)
+        # Générer HR repos aléatoire selon fitness
+        if fitness == 'débutant':
+            hr_repos = np.random.uniform(70, 100)
+        elif fitness == 'intermédiaire':
+            hr_repos = np.random.uniform(60, 80)
+        else:
+            hr_repos = np.random.uniform(50, 70)
+
+        # Calculer FC max a partir de cette article : https://pubmed.ncbi.nlm.nih.gov/25389634/
+        if sex == 'M':
+            hr_max = 208.609 - 0.716 * age
+        if sex == 'F':
+            hr_max = 209.273-0.804 * age
         
         # Ajouter au fichier CSV user_profiles
         new_profile = {
@@ -274,8 +280,7 @@ class MainWindow(QMainWindow):
             'sex': sex,
             'fitness': fitness,
             'HR_repos': round(hr_repos, 1),
-            'HR_max': round(hr_max, 1),
-            'RR_repos': round(rr_repos, 1)
+            'HR_max': round(hr_max, 1)
         }
         
         # Ajouter à user_profiles.csv
@@ -338,15 +343,15 @@ class MainWindow(QMainWindow):
         text += "Bienvenue! Vous allez débuter par une séance d'entraînement de 10 minutes\n"
         text += "destinée à collecter vos premières données physiologiques.\n\n"
         text += "PROGRAMME:\n"
-        text += "├─ 3 minutes de marche (échauffement)\n"
-        text += "├─ 5 minutes de course (phase principale)\n"
-        text += "└─ 2 minutes de marche (récupération)\n\n"
+        text += "- 3 minutes de marche (échauffement)\n"
+        text += "- 5 minutes de course (phase principale)\n"
+        text += "- 2 minutes de marche (récupération)\n\n"
         text += "Cette séance servira de base pour adapter vos futurs entraînements.\n\n"
-        text += "INSTRUCTIONS:\n"
-        text += "• Assurez-vous que le système LSL est connecté (Live Stream)\n"
-        text += "• Suivez les indications de phase affichées à l'écran\n"
-        text += "• Vous pouvez ajuster l'intensité selon vos sensations\n"
-        text += "• Les données seront enregistrées automatiquement\n"
+        text += "Instructions:\n"
+        text += "- Assurez-vous que le système LSL est connecté (Live Stream)\n"
+        text += "- Suivez les indications de phase affichées à l'écran\n"
+        text += "- Vous pouvez ajuster l'intensité selon vos sensations\n"
+        text += "- Les données seront enregistrées automatiquement si LSL est connecté\n"
         
         self.result_area.setPlainText(text)
         
@@ -364,7 +369,7 @@ class MainWindow(QMainWindow):
                 'fatigue_trend': 'N/A'
             },
             'recommendations': [],
-            'adaptive_warnings': [],
+            'warnings': [],
             'is_initial': True
         }
         
@@ -465,6 +470,16 @@ class MainWindow(QMainWindow):
         for lbl in (self.live_hr_label, self.live_hrv_label, self.live_resp_label, self.live_emg_label):
             lbl.setAlignment(Qt.AlignCenter)
             live_layout.addWidget(lbl)
+        
+        # Widget d'avertissement BPM
+        self.hr_warning_label = QLabel("")
+        self.hr_warning_label.setAlignment(Qt.AlignCenter)
+        self.hr_warning_label.setStyleSheet(
+            "background-color: #e74c3c; color: white; font-weight: bold; "
+            "font-size: 12pt; padding: 10px; border-radius: 5px;"
+        )
+        self.hr_warning_label.hide()
+        live_layout.addWidget(self.hr_warning_label)
 
         live_btns = QHBoxLayout()
         self.live_start_btn = QPushButton("Démarrer Live")
@@ -553,27 +568,70 @@ class MainWindow(QMainWindow):
     def display_recommendation(self):
         rec = self.current_recommendation
         recovery = rec['recovery_status']
-        
-        text = "=" * 70 + "\n"
-        text += "ANALYSE ET RECOMMANDATION\n"
-        text += "=" * 70 + "\n\n"
-        text += f"État: {recovery['status'].upper()} ({recovery['score']}/100)\n"
-        text += f"Fatigue: {recovery.get('fatigue_probability', 0):.1%} | Tendance: {recovery.get('fatigue_trend', 'N/A')}\n"
-        text += f"{recovery['message']}\n\n"
-        text += f"Durée: {rec['duration']} min\n"
-        text += f"Zone HR: {rec['hr_target_range'][0]}-{rec['hr_target_range'][1]} bpm\n\n"
-        text += f"{rec['description']}\n\n"
-        
-        if rec.get('adaptive_warnings'):
-            text += "AVERTISSEMENTS:\n"
-            for w in rec['adaptive_warnings']:
-                text += f"• {w}\n"
-            text += "\n"
-        
-        text += "RECOMMANDATIONS:\n"
-        for r in rec['recommendations']:
-            text += f"• {r}\n"
-        
+
+        lines = []
+        lines.append("=" * 60)
+        lines.append("VOTRE RECOMMANDATION SIMPLIFIÉE")
+        lines.append("=" * 60)
+        lines.append("")
+
+        lines.append(f"État général: {recovery['status'].upper()} ({recovery['score']}/100)")
+        lines.append(recovery['message'])
+        lines.append("")
+
+        if recovery.get('details'):
+            lines.append("Ce qui explique cette note:")
+            for detail in recovery['details']:
+                lines.append(f"• {detail}")
+            lines.append("")
+
+        if recovery.get('factors'):
+            lines.append("Signaux observés:")
+            factors = recovery['factors']
+
+            if 'hr_mean' in factors:
+                hr = factors['hr_mean']
+                lines.append(f"- Rythme cardiaque moyen: {hr['value']:.0f} {hr.get('unit', 'bpm')}")
+
+            if 'hrv_sdnn' in factors:
+                hrv = factors['hrv_sdnn']
+                lines.append(f"- Variabilité du cœur (HRV): {hrv['value']:.0f} {hrv.get('unit', 'ms')} - plus c'est haut, plus vous êtes reposé")
+
+            if 'emg_rms' in factors:
+                emg = factors['emg_rms']
+                lines.append(f"- Tension musculaire: {emg['value']:.2f}")
+
+            if 'fatigue_probability' in factors:
+                fatigue = factors['fatigue_probability']
+                lines.append(f"- Risque de fatigue estimé: {fatigue['value']:.1%}")
+
+            lines.append("")
+
+        hr_min, hr_max = rec['hr_target_range']
+        lines.append("Plan proposé:")
+        lines.append(f"- Durée: {rec['duration']} min ")
+        lines.append(f"- Intensité: {rec['intensity']}")
+        lines.append(f"- Rythme cardiaque cible: {hr_min}-{hr_max} bpm")
+        lines.append(f"- FC repos / max connues: {rec.get('hr_repos', 'N/A')} / {rec.get('hr_max', 'N/A')} bpm")
+        lines.append("")
+        lines.append(rec['description'])
+        lines.append("")
+
+        if rec.get('warnings'):
+            lines.append("Attention:")
+            for w in rec['warnings']:
+                lines.append(f"• {w}")
+            lines.append("")
+
+        lines.append("Conseils à suivre:")
+        if rec.get('recommendations'):
+            for r in rec['recommendations']:
+                lines.append(f"• {r}")
+        else:
+            lines.append("• Pas de conseil spécifique, écoutez vos sensations.")
+
+        text = "\n".join(lines)
+
         self.result_area.clear()
         self.result_area.setPlainText(text)
         if hasattr(self, 'begin_btn'):
@@ -590,22 +648,17 @@ class MainWindow(QMainWindow):
         hr_min, hr_max = rec['hr_target_range']
         self.zones_label.setText(f"Zone HR cible: {hr_min}-{hr_max} bpm")
         
+        # Configurer le seuil d'avertissement BPM (FC max)
+        self.hr_max_threshold = rec.get('hr_max', 200)
+        
         self.progress_bar.setMaximum(self.target_duration)
 
         # Gérer le cas de l'entraînement initial (phases fixes)
         if rec.get('is_initial'):
-            # Entraînement initial: 3 min marche, 5 min course, 2 min marche
-            """
             self.initial_phases = [
                 {'type': 'walk', 'duration': 3 * 60, 'label': 'Marche (échauffement)'},
                 {'type': 'run', 'duration': 5 * 60, 'label': 'Course (phase principale)'},
                 {'type': 'walk', 'duration': 2 * 60, 'label': 'Marche (récupération)'}
-            ]
-            """
-            self.initial_phases = [
-                {'type': 'walk', 'duration': 10, 'label': 'Marche (échauffement)'},
-                {'type': 'run', 'duration': 10, 'label': 'Course (phase principale)'},
-                {'type': 'walk', 'duration': 10, 'label': 'Marche (récupération)'}
             ]
             self.current_phase_index = 0
             self.phase_label.setText("Phase: Marche (échauffement)")
@@ -671,6 +724,9 @@ class MainWindow(QMainWindow):
         # Masquer les labels de phase
         self.phase_label.hide()
         self.phase_remaining_label.hide()
+        
+        # Réinitialiser l'avertissement BPM
+        self.hr_warning_label.hide()
         
         self.start_pause_btn.setText("Démarrer")
         self.start_pause_btn.setEnabled(True)
@@ -872,8 +928,11 @@ class MainWindow(QMainWindow):
         
         if self.live_reader:
             m = self.live_reader.get_latest_metrics()
+            current_hr = None
+            
             if m.get('hr_bpm') is not None:
-                self.live_hr_label.setText(f"HR: {m['hr_bpm']:.1f} bpm")
+                current_hr = m['hr_bpm']
+                self.live_hr_label.setText(f"HR: {current_hr:.1f} bpm")
             else:
                 self.live_hr_label.setText("HR: -- bpm")
             if m.get('hrv_rmssd_ms') is not None:
@@ -888,6 +947,31 @@ class MainWindow(QMainWindow):
                 self.live_emg_label.setText(f"EMG RMS: {m['emg_rms']:.3f}")
             else:
                 self.live_emg_label.setText("EMG RMS: --")
+            
+            self.check_hr_warning(current_hr)
+    
+    def check_hr_warning(self, current_hr):
+        """
+        Vérifie si le BPM actuel dépasse la FC max et affiche un avertissement.
+        """
+        if current_hr is None or not self.is_running or self.hr_max_threshold is None:
+            # Pas de données, session non démarrée, ou pas de seuil configuré
+            self.hr_warning_label.hide()
+            return
+        
+        # Vérifier si le BPM dépasse la FC max
+        if current_hr > self.hr_max_threshold:
+            # Afficher l'avertissement
+            warning_msg = f"⚠️ ATTENTION! FC AU-DESSUS DU MAX\n{current_hr:.0f} bpm > {self.hr_max_threshold:.0f} bpm\nRÉDUISEZ L'INTENSITÉ!"
+            self.hr_warning_label.setText(warning_msg)
+            self.hr_warning_label.setStyleSheet(
+                "background-color: #e74c3c; color: white; font-weight: bold; "
+                "font-size: 13pt; padding: 15px; border-radius: 5px; border: 3px solid #c0392b;"
+            )
+            self.hr_warning_label.show()
+        else:
+            # FC acceptable, masquer l'avertissement
+            self.hr_warning_label.hide()
     
     def run_timer(self):
         while self.is_running:
@@ -910,7 +994,7 @@ class MainWindow(QMainWindow):
         percentage = int((self.elapsed_seconds / self.target_duration) * 100) if self.target_duration > 0 else 0
         self.progress_label.setText(f"{percentage}%")
 
-        # Gestion des phases UNIQUEMENT pour l'entraînement initial
+        # Gestion des phases pour l'entraînement initial
         if self.initial_phases:
             # Trouver la phase actuelle
             time_in_session = self.elapsed_seconds

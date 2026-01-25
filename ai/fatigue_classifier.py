@@ -14,22 +14,13 @@ from sklearn.metrics import (
 )
 import joblib
 from typing import Tuple, Dict
-import warnings
-warnings.filterwarnings('ignore')
 
 # Obtenir le répertoire du script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class FatigueClassifier:
-    """
-    Classificateur Random Forest pour la prédiction de la fatigue.
-    
-    Features utilisées:
-    - ECG: ecg_hr_bpm, ecg_hrv_sdnn, ecg_hrv_rmssd
-    - EMG jambe: emg_rms, emg_median_freq
-    - Respiration: resp_rate_bpm
-    """
+    """Random Forest classifier for fatigue prediction."""
     
     FEATURE_NAMES = [
         'ecg_hr_bpm', 
@@ -41,13 +32,6 @@ class FatigueClassifier:
     ]
     
     def __init__(self, n_estimators: int = 100, random_state: int = 42):
-        """
-        Initialise le classificateur.
-        
-        Args:
-            n_estimators: Nombre d'arbres dans la forêt
-            random_state: Pour reproductibilité
-        """
         self.model = RandomForestClassifier(
             n_estimators=n_estimators,
             random_state=random_state,
