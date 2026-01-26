@@ -2,7 +2,7 @@
 
 Application d'entraînement de course adapté par IA.
 
-**GitHub**: https://github.com/votre-username/projet_rain
+**GitHub**: https://github.com/Inesssssssssss/rAIn.git
 
 ## Installation
 
