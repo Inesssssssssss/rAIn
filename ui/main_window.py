@@ -890,7 +890,15 @@ class MainWindow(QMainWindow):
             
             if os.path.exists(dataset_path):
                 df_existing = pd.read_csv(dataset_path)
-                df_updated = pd.concat([df_existing, df_new], ignore_index=True)
+                # Garder seulement les colonnes communes pour éviter les doublons
+                common_cols = [col for col in df_new.columns if col in df_existing.columns]
+                if common_cols:
+                    df_existing_filtered = df_existing[common_cols]
+                    df_new_filtered = df_new[common_cols]
+                    df_updated = pd.concat([df_existing_filtered, df_new_filtered], ignore_index=True)
+                else:
+                    # Si aucune colonne commune, utiliser toutes les colonnes du nouveau
+                    df_updated = df_new
             else:
                 df_updated = df_new
             
